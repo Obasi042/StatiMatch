@@ -1,49 +1,62 @@
 import React, { useState, useEffect } from 'react';
-import { fetchUpcomingMatches, analyzeMatchDeeply } from './services/geminiService';
+import { fetchMatches, analyzeMatchDeeply } from './services/geminiService';
 import MatchSelector from './components/MatchSelector';
 import BookingCodeSection from './components/BookingCodeSection';
 import AnalysisResult from './components/AnalysisResult';
 import LoadingOverlay from './components/LoadingOverlay';
 import BetBuilder from './components/BetBuilder';
-import { Match, DeepAnalysis, AnalysisState, BetSelection } from './types';
-import { Activity, BrainCircuit, Search, Ticket } from 'lucide-react';
+import { Match, DeepAnalysis, AnalysisState, BetSelection, Sport } from './types';
+import { Activity, BrainCircuit, Search, Ticket, Trophy, Dribbble } from 'lucide-react';
 
 const LOADING_MESSAGES = [
   "Searching global sports databases...",
-  "Analyzing referee card distribution...",
+  "Analyzing referee/officiating trends...",
   "Evaluating team form and H2H history...",
   "Simulating match scenarios (Monte Carlo)...",
-  "Calculating Expected Goals (xG)...",
+  "Calculating Efficiency Metrics...",
   "Finalizing market probabilities..."
 ];
 
 type ViewMode = 'explore' | 'booking';
 
 const App: React.FC = () => {
+  const [sport, setSport] = useState<Sport>('football');
   const [matches, setMatches] = useState<Match[]>([]);
-  const [selectedMatch, setSelectedMatch] = useState<string | null>(null);
+  const [selectedMatch, setSelectedMatch] = useState<Match | null>(null);
   const [analysis, setAnalysis] = useState<DeepAnalysis | null>(null);
   const [appState, setAppState] = useState<AnalysisState>({ status: 'loading_matches' });
   const [loadingMessage, setLoadingMessage] = useState(LOADING_MESSAGES[0]);
   const [viewMode, setViewMode] = useState<ViewMode>('explore');
   const [betSlip, setBetSlip] = useState<BetSelection[]>([]);
+  
+  // Date State - Default to local YYYY-MM-DD
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
 
+  // Reload matches when sport or date changes
   useEffect(() => {
-    // Initial fetch of matches
     const loadMatches = async () => {
+      setAppState({ status: 'loading_matches' });
+      setMatches([]);
       try {
-        const data = await fetchUpcomingMatches();
-        setMatches(data);
+        const data = await fetchMatches(sport, selectedDate);
+        // Strict client-side filtering to ensure no hallucinated dates slip through
+        const filteredData = data.filter(m => m.date === selectedDate);
+        setMatches(filteredData);
         setAppState({ status: 'idle' });
       } catch (e) {
         console.error(e);
-        setAppState({ status: 'idle', error: 'Failed to load upcoming matches. You can still search manually.' });
+        setAppState({ status: 'idle', error: `Failed to load ${sport} matches.` });
       }
     };
     loadMatches();
-  }, []);
+  }, [sport, selectedDate]);
 
-  // Cycle loading messages when analyzing
   useEffect(() => {
     if (appState.status === 'analyzing') {
       let i = 0;
@@ -56,20 +69,32 @@ const App: React.FC = () => {
   }, [appState.status]);
 
   const handleMatchSelect = async (match: Match) => {
-    startAnalysis(`${match.home} vs ${match.away} (${match.league})`);
+    setSelectedMatch(match);
+    await startAnalysis(match);
   };
 
   const handleManualInput = async (input: string) => {
-    startAnalysis(input);
+    // For manual input, we create a temporary match object
+    const manualMatch: Match = {
+      id: 'manual',
+      home: input,
+      away: '',
+      league: 'Custom',
+      date: selectedDate,
+      sport: sport
+    };
+    setSelectedMatch(manualMatch);
+    await startAnalysis(manualMatch, input);
   };
 
-  const startAnalysis = async (matchString: string) => {
-    setSelectedMatch(matchString);
+  const startAnalysis = async (match: Match, manualQuery?: string) => {
     setAppState({ status: 'analyzing' });
     setAnalysis(null);
 
+    const matchString = manualQuery || `${match.home} vs ${match.away} (${match.league})`;
+
     try {
-      const result = await analyzeMatchDeeply(matchString);
+      const result = await analyzeMatchDeeply(matchString, match.sport);
       setAnalysis(result);
       setAppState({ status: 'complete' });
     } catch (e) {
@@ -90,7 +115,7 @@ const App: React.FC = () => {
       if (exists) {
         return prev.filter(s => s.id !== selection.id);
       }
-      return [...prev, selection];
+      return [...prev, { ...selection, sport }];
     });
   };
 
@@ -113,16 +138,39 @@ const App: React.FC = () => {
             </div>
             <span className="font-bold text-xl tracking-tight text-white">Stati<span className="text-indigo-400">Match</span></span>
           </div>
-          <div className="hidden sm:flex items-center gap-3 text-[10px] font-bold tracking-widest text-gray-500 bg-gray-900 px-3 py-1.5 rounded-full border border-gray-800">
-             <Activity className="w-3 h-3 text-emerald-500 animate-pulse" />
-             <span>ENGINE: GEMINI 3 PRO</span>
+          
+          <div className="flex items-center gap-4">
+             {/* Sport Switcher */}
+             <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-800">
+                <button 
+                  onClick={() => setSport('football')}
+                  className={`px-3 py-1.5 rounded-md flex items-center gap-2 text-xs font-bold transition-all ${sport === 'football' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
+                >
+                  <Trophy className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Football</span>
+                </button>
+                <button 
+                  onClick={() => setSport('basketball')}
+                  className={`px-3 py-1.5 rounded-md flex items-center gap-2 text-xs font-bold transition-all ${sport === 'basketball' ? 'bg-orange-600 text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
+                >
+                  <Dribbble className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Basketball</span>
+                </button>
+             </div>
+
+             <div className="hidden md:flex items-center gap-3 text-[10px] font-bold tracking-widest text-gray-500 bg-gray-900 px-3 py-1.5 rounded-full border border-gray-800">
+                <Activity className="w-3 h-3 text-emerald-500 animate-pulse" />
+                <span>GEMINI 3 PRO</span>
+             </div>
           </div>
         </div>
       </nav>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {(appState.status === 'analyzing' || appState.status === 'processing_code') && (
-          <LoadingOverlay message={appState.status === 'processing_code' ? 'Deciphering booking code...' : loadingMessage} />
+        {(appState.status === 'analyzing' || appState.status === 'processing_code' || appState.status === 'loading_matches') && (
+          <LoadingOverlay message={
+            appState.status === 'processing_code' ? 'Deciphering booking code...' : 
+            appState.status === 'loading_matches' ? `Fetching top ${sport} fixtures...` : 
+            loadingMessage
+          } />
         )}
         
         {appState.status === 'error' && (
@@ -135,20 +183,24 @@ const App: React.FC = () => {
         {appState.status === 'complete' && analysis && selectedMatch ? (
           <AnalysisResult 
             analysis={analysis} 
-            matchTitle={selectedMatch} 
+            matchTitle={selectedMatch.id === 'manual' ? selectedMatch.home : `${selectedMatch.home} vs ${selectedMatch.away}`}
+            sport={selectedMatch.sport}
             onReset={handleReset} 
             betSlip={betSlip}
             onToggleBet={handleToggleBet}
+            homeLogo={selectedMatch.homeLogo}
+            awayLogo={selectedMatch.awayLogo}
           />
         ) : (
           <div className="flex flex-col items-center min-h-[70vh] space-y-12 pt-8">
             <div className="text-center space-y-4 max-w-3xl px-4">
               <h1 className="text-4xl md:text-6xl font-black text-white tracking-tight">
-                Data-Driven <br/>
-                <span className="gradient-text">Betting Intelligence</span>
+                {sport === 'basketball' ? 'Courtside' : 'Pitchside'} <br/>
+                <span className={`gradient-text ${sport === 'basketball' ? 'from-orange-500 to-amber-500' : ''}`}>Intelligence</span>
               </h1>
               <p className="text-lg text-gray-400 font-light">
-                Professional grade analytics. Load a booking code or search a match to get AI-powered probabilities, tactical breakdowns, and value predictions.
+                Professional grade analytics for {sport}. 
+                {sport === 'football' ? ' Expected Goals, Referee stats, and tactical breakdowns.' : ' Pace, Efficiency, Four Factors, and Injury impact.'}
               </p>
             </div>
 
@@ -175,6 +227,8 @@ const App: React.FC = () => {
                   isLoading={appState.status === 'loading_matches'}
                   onSelect={handleMatchSelect}
                   onManualInput={handleManualInput}
+                  selectedDate={selectedDate}
+                  onDateChange={setSelectedDate}
                 />
               ) : (
                 <BookingCodeSection 

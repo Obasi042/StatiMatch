@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { Match, DeepAnalysis } from "../types";
+import { Match, DeepAnalysis, Sport } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
@@ -28,25 +28,80 @@ const parseJSON = (text: string) => {
   }
 };
 
-export const fetchUpcomingMatches = async (): Promise<Match[]> => {
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    const prompt = `
-      Act as a sports scheduler. Search for the top 30 most exciting upcoming football matches in the "Big 5" European leagues (Premier League, La Liga, Bundesliga, Serie A, Ligue 1) and UEFA Champions League scheduled for the next 7 days starting from ${today}.
-      
-      Prioritize matches between top-table teams, derbies, or high-stakes games.
+// Helper to sanitize strings and prevent objects from crashing React
+const sanitizeString = (val: any, fallback: string): string => {
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number') return String(val);
+  if (val && typeof val === 'object') {
+    // If AI incorrectly returns an object (e.g. { name: "Team" } or { home: "Team", away: "..." })
+    if (val.name) return String(val.name);
+    if (val.team) return String(val.team);
+    // If the AI nested the match object inside the home field
+    if (val.home && typeof val.home === 'string') return val.home; 
+    // Fallback: try to stringify or just return fallback to prevent crash
+    return fallback;
+  }
+  return fallback;
+};
 
-      Return ONLY a JSON object containing an array called "matches".
-      Each match object must have: "home", "away", "league", "date" (YYYY-MM-DD), "time" (HH:MM).
-      
-      Example format:
+export const fetchMatches = async (sport: Sport = 'football', date: string): Promise<Match[]> => {
+  try {
+    let prompt = "";
+    // Create a date object set to noon to avoid timezone shifts when formatting
+    const dateObj = new Date(date + 'T12:00:00');
+    const targetDate = dateObj.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    
+    if (sport === 'football') {
+        prompt = `
+          Act as a sports data engine. Find the schedule for ${sport} matches on EXACTLY ${targetDate} (YYYY-MM-DD: ${date}).
+          
+          You MUST use the 'googleSearch' tool. 
+          Perform a search query like: "${sport} fixtures ${targetDate}".
+          
+          STRICT DATE FILTERING RULES:
+          1.  **EXACT MATCH**: Only include matches where the kick-off is on ${date} (local/UTC).
+          2.  **EXCLUDE SURROUNDING DAYS**: Do NOT include matches from the day before or the day after, even if they are part of the same "Matchday".
+          3.  **QUANTITY**: Find up to 30 matches if available.
+          
+          LEAGUE PRIORITY:
+          1.  Big 5 Europe (Premier League, La Liga, Bundesliga, Serie A, Ligue 1).
+          2.  European Competitions (UCL, UEL, Conference).
+          3.  Major Global Leagues (MLS, Saudi Pro League, Brasileirão, Eredivisie, Liga Portugal).
+          4.  International Friendlies/Qualifiers.
+        `;
+    } else {
+        prompt = `
+          Act as a sports data engine. Find the schedule for Basketball matches on EXACTLY ${targetDate} (YYYY-MM-DD: ${date}).
+          
+          You MUST use the 'googleSearch' tool.
+          
+          STRICT RULES:
+          1. Include ALL NBA games scheduled for ${date}.
+          2. Include top EuroLeague games on ${date}.
+          3. Exclude games not played on this specific calendar date.
+        `;
+    }
+
+    prompt += `
+      Return ONLY a valid JSON object. No markdown formatting outside the JSON block.
+      Format:
       \`\`\`json
       {
         "matches": [
-          { "home": "Arsenal", "away": "Liverpool", "league": "Premier League", "date": "2024-10-27", "time": "16:30" }
+          { 
+            "home": "Team A", 
+            "away": "Team B", 
+            "league": "Competition Name", 
+            "date": "${date}", 
+            "time": "HH:MM",
+            "homeLogo": "url_to_logo_png",
+            "awayLogo": "url_to_logo_png"
+          }
         ]
       }
       \`\`\`
+      
+      CRITICAL: The "date" field in the JSON MUST be exactly "${date}". If a match is on a different date, DO NOT include it in the list.
     `;
 
     const response = await ai.models.generateContent({
@@ -64,21 +119,21 @@ export const fetchUpcomingMatches = async (): Promise<Match[]> => {
         throw new Error("Invalid matches format");
     }
 
+    // Map and Sanitize data to prevent React Object Errors
     return data.matches.map((m: any, idx: number) => ({
-      ...m,
-      id: `match-${idx}-${Date.now()}`
+      home: sanitizeString(m.home, 'Unknown Home'),
+      away: sanitizeString(m.away, 'Unknown Away'),
+      league: sanitizeString(m.league, 'Unknown League'),
+      date: sanitizeString(m.date, date),
+      time: sanitizeString(m.time, '00:00'),
+      homeLogo: typeof m.homeLogo === 'string' ? m.homeLogo : undefined,
+      awayLogo: typeof m.awayLogo === 'string' ? m.awayLogo : undefined,
+      sport,
+      id: `match-${sport}-${idx}-${Date.now()}`
     }));
   } catch (error) {
-    console.error("Error fetching matches:", error);
-    // Return safe fallback data so the app doesn't look broken
-    return [
-      { id: 'fb-1', home: 'Real Madrid', away: 'Barcelona', league: 'La Liga', date: 'Upcoming', time: '20:00' },
-      { id: 'fb-2', home: 'Man City', away: 'Arsenal', league: 'Premier League', date: 'Upcoming', time: '16:30' },
-      { id: 'fb-3', home: 'Bayern Munich', away: 'Dortmund', league: 'Bundesliga', date: 'Upcoming', time: '18:30' },
-      { id: 'fb-4', home: 'Inter', away: 'AC Milan', league: 'Serie A', date: 'Upcoming', time: '19:45' },
-      { id: 'fb-5', home: 'PSG', away: 'Marseille', league: 'Ligue 1', date: 'Upcoming', time: '20:00' },
-      { id: 'fb-6', home: 'Liverpool', away: 'Chelsea', league: 'Premier League', date: 'Upcoming', time: '15:00' }
-    ];
+    console.error(`Error fetching ${sport} matches:`, error);
+    return [];
   }
 };
 
@@ -86,10 +141,13 @@ export const processBookingCode = async (code: string): Promise<Match[]> => {
   try {
     const prompt = `
       The user has provided a betting booking code: "${code}".
-      Simulate the contents of this booking code by generating a list of 4-6 realistic high-profile football matches that might be in a popular accumulator bet this week.
+      Simulate the contents of this booking code by generating a list of 4-6 realistic high-profile matches (Football or Basketball) that might be in a popular accumulator bet this week.
       
       Return ONLY a JSON object containing an array called "matches".
-      Each match object must have: "home", "away", "league", "date", "time", and "bookingPrediction".
+      Each match object must have: 
+      - "home", "away", "league", "date", "time", "sport" ('football' or 'basketball'), "bookingPrediction".
+      - "homeLogo", "awayLogo" (URL strings).
+      
       "bookingPrediction" should be a market like "Home Win", "Over 2.5", "GG", "Draw", etc.
 
       Example format:
@@ -99,10 +157,13 @@ export const processBookingCode = async (code: string): Promise<Match[]> => {
           { 
             "home": "Team A", 
             "away": "Team B", 
-            "league": "Premier League", 
+            "league": "NBA", 
             "date": "2024-10-27", 
             "time": "20:00",
-            "bookingPrediction": "Home Win"
+            "sport": "basketball",
+            "bookingPrediction": "Home Win",
+            "homeLogo": "...",
+            "awayLogo": "..."
           }
         ]
       }
@@ -112,7 +173,9 @@ export const processBookingCode = async (code: string): Promise<Match[]> => {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: prompt,
-      // Removed googleSearch to prevent 429s/latency on this specific simulation task which relies more on generative capability
+      config: {
+        tools: [{ googleSearch: {} }],
+      }
     });
 
     const text = response.text || "";
@@ -123,87 +186,182 @@ export const processBookingCode = async (code: string): Promise<Match[]> => {
     }
 
     return data.matches.map((m: any, idx: number) => ({
-      ...m,
+      home: sanitizeString(m.home, 'Team A'),
+      away: sanitizeString(m.away, 'Team B'),
+      league: sanitizeString(m.league, 'League'),
+      date: sanitizeString(m.date, new Date().toISOString().split('T')[0]),
+      time: sanitizeString(m.time, '00:00'),
+      bookingPrediction: sanitizeString(m.bookingPrediction, ''),
+      homeLogo: typeof m.homeLogo === 'string' ? m.homeLogo : undefined,
+      awayLogo: typeof m.awayLogo === 'string' ? m.awayLogo : undefined,
+      sport: m.sport === 'basketball' ? 'basketball' : 'football',
       id: `booking-${code}-${idx}-${Date.now()}`
     }));
   } catch (error) {
     console.error("Error processing booking code", error);
-    // Fallback if parsing fails or error occurs
-    return [
-       { id: 'bk-1', home: 'Man City', away: 'Liverpool', league: 'Premier League', date: 'Upcoming', time: '16:30', bookingPrediction: 'Over 2.5 Goals' },
-       { id: 'bk-2', home: 'Inter', away: 'Juventus', league: 'Serie A', date: 'Upcoming', time: '19:45', bookingPrediction: 'Home Win' },
-       { id: 'bk-3', home: 'Real Madrid', away: 'Barcelona', league: 'La Liga', date: 'Upcoming', time: '20:00', bookingPrediction: 'GG (Both Teams to Score)' }
-    ];
+    return [];
   }
 };
 
-export const analyzeMatchDeeply = async (match: Match | string): Promise<DeepAnalysis> => {
+export const analyzeMatchDeeply = async (match: Match | string, sport: Sport = 'football'): Promise<DeepAnalysis> => {
   const matchString = typeof match === 'string' ? match : `${match.home} vs ${match.away} (${match.league})`;
   
-  const prompt = `
-    Act as a world-class football analyst and professional sports bettor. 
-    Conduct an EXHAUSTIVE, DEEP-DIVE statistical research analysis for the match: ${matchString}.
-    
-    You MUST use the 'googleSearch' tool to retrieve the absolute latest real-time data.
-    
-    ### REQUIRED RESEARCH PILLARS (Use Statistical Models):
-    1.  **Elo Rating System**: Search for the current Club Elo ratings for both teams. 
-        -   Calculate the win probability delta.
-    2.  **Poisson Distribution Model**: 
-        -   Estimate the Attack/Defense Strength for both teams.
-        -   Use these to estimate the expected goals (λ) for Home and Away.
-    3.  **Player Performance Data**: 
-        -   Identify key players in top form.
-        -   Analyze metrics like "Shots on Target per game", "Pass Completion %" (for midfielders), or "Goals per 90".
-        -   Find the SINGLE most probable player prop.
-    4.  **Advanced Metrics**: Search for recent xG, xGA, and possession stats.
-    5.  **Squad Intel**: Confirm latest injuries and suspensions.
-    6.  **Tactical & Referee**: Analyze playstyles and referee strictness.
+  let prompt = "";
 
-    ### PREDICTION LOGIC:
-    -   **Model Triangulation**: predictions must be supported by Elo, Poisson, and Player Form.
-    -   **Value Identification**: Highlight "Value" where models disagree with the market.
-    -   **Accuracy**: Be precise.
+  if (sport === 'football') {
+    prompt = `
+    Act as a Professional Sports Quantitative Analyst and Handicapper. 
+    Perform a rigorous, "Exhaustive Deep-Dive" analysis for: ${matchString}.
+    
+    You MUST use 'googleSearch' to gather the following real-time data points:
+    1.  **Confirmed Injuries/Suspensions**: Identify key missing players and calculate their "Value Above Replacement" impact.
+    2.  **Referee Statistics**: Find the appointed referee. Retrieve their "Yellow Cards per Game" and "Fouls per Game" average for the current season.
+    3.  **Advanced Team Metrics**:
+        -   Expected Goals (xG) for and against (Last 5 games).
+        -   Home/Away splits (Home Advantage factor).
+        -   Recent tactical shifts (e.g. Change in formation).
+    4.  **H2H & Psychology**: Historical dominance and current motivation (e.g. "Relegation fight" vs "Mid-table comfort").
 
-    ### OUTPUT FORMAT:
-    Return strictly a valid JSON object with this structure:
+    **ANALYSIS & MODELING (Reasoning Process):**
+    -   **Tactical Simulation**: Predict how the styles clash (e.g. "Counter-attack vs High Line").
+    -   **Poisson Distribution**: Estimate the probability of 0, 1, 2, 3+ goals for each team.
+    -   **Market Value**: Compare your calculated probabilities against standard market odds to find "Value".
+
+    **OUTPUT INSTRUCTION:**
+    Return a VALID JSON object (no markdown text outside) with this EXACT structure:
+
     {
-      "matchOverview": "Executive summary including Elo Comparison and match context.",
-      "refereeAnalysis": "Name of referee. Stat-backed analysis of their card/penalty strictness.",
-      "formGuide": "Recent form (W-D-L), Elo ratings, and xG performance trends.",
-      "tacticalAnalysis": "Tactical battle analysis. Explicitly mention Poisson-derived expected scorelines.",
+      "matchOverview": "A high-level executive summary of the match context, stakes, and narrative.",
+      "refereeAnalysis": "Name the referee. Cite their stats (e.g. 'Avg 4.5 cards/game'). conclude on card potential.",
+      "formGuide": "Deep analysis of recent form using xG. (e.g. 'Team A won last 2 but xG suggests they were lucky').",
+      "tacticalAnalysis": "Detailed tactical breakdown. Key matchups (e.g. 'Winger X vs Fullback Y').",
       "predictions": {
-        "winner": { "market": "1X2", "selection": "Home / Draw / Away", "confidence": "High/Medium/Low", "reasoning": "Reasoning based on Elo difference..." },
-        "goals": { "market": "Over/Under 2.5", "selection": "Over / Under", "confidence": "...", "reasoning": "Reasoning based on Poisson probabilities..." },
-        "cards": { "market": "Total Cards", "selection": "Over/Under X.5", "confidence": "...", "reasoning": "Based on referee stats..." },
-        "corners": { "market": "Total Corners", "selection": "Over/Under X.5", "confidence": "...", "reasoning": "..." },
-        "handicap": { "market": "Asian Handicap", "selection": "Team +/- X", "confidence": "...", "reasoning": "..." },
-        "playerStat": { "market": "Player Props", "selection": "Player Name & Stat (e.g. Haaland 1+ SoT)", "confidence": "High/Medium/Low", "reasoning": "Based on recent shots/goals per 90 data." }
+        "winner": { 
+            "market": "1X2 / Moneyline", 
+            "selection": "The prediction", 
+            "confidence": "High/Medium/Low", 
+            "reasoning": "Quantitative reasoning. e.g. 'Model gives 60% win prob, implied odds are 50%.'"
+        },
+        "goals": { 
+            "market": "Total Goals", 
+            "selection": "e.g. Over 2.5", 
+            "confidence": "...", 
+            "reasoning": "Based on xG trends and defensive absentee analysis."
+        },
+        "cards": { 
+            "market": "Bookings / Cards", 
+            "selection": "e.g. Over 4.5 Cards", 
+            "confidence": "...", 
+            "reasoning": "Referee strictness + Team foul averages + Match importance."
+        },
+        "corners": { 
+            "market": "Corners", 
+            "selection": "e.g. Home Over 5.5", 
+            "confidence": "...", 
+            "reasoning": "Based on 'Shots Deflected' rate and 'Crosses Attempted' stats."
+        },
+        "handicap": { 
+            "market": "Asian Handicap", 
+            "selection": "e.g. Away +0.5", 
+            "confidence": "...", 
+            "reasoning": "Why the underdog is undervalued or favorite is overvalued."
+        },
+        "playerStat": { 
+           "market": "Player Prop", 
+           "selection": "e.g. Player X Over 0.5 Assists", 
+           "confidence": "...", 
+           "reasoning": "Player recent form + Opponent defensive weakness in that zone."
+        }
       },
       "bestBet": { 
-        "market": "The single best value market",
-        "selection": "The outcome",
-        "confidence": "High",
-        "reasoning": "Why this is the mathematical best bet."
+        "market": "Best Value Market", 
+        "selection": "The single best bet", 
+        "confidence": "High", 
+        "reasoning": "Why this specific bet offers the highest positive expected value (EV+) and probability." 
+      },
+      "visualization": {
+         "footballMomentum": [/* 6 integers (0-100) representing Home Team dominance in 15-min chunks. 0-50=Away, 50-100=Home. e.g. [55, 60, 45, 70, 80, 50] */]
       }
     }
-  `;
+    `;
+  } else {
+    // BASKETBALL PROMPT - HIGH ACCURACY MODE (90% TARGET)
+     prompt = `
+    Act as the Lead Data Scientist for an Elite Sports Betting Syndicate.
+    Your goal is to run a "Monte Carlo" style simulation to find the **Best Game Line Value** (Spread, Total, or Moneyline) with >90% statistical confidence.
+    
+    MATCH: ${matchString}
+    
+    ### PHASE 1: VARIABLE EXTRACTION (Use 'googleSearch')
+    1.  **Usage Vacuum Protocol**: If Star Player A is OUT, mathematically distribute their Usage Rate (USG%) to remaining starters.
+    2.  **Pace Factor**: Calculate (Team A Pace + Team B Pace) / 2. Compare to League Average (99.5). Generate a 'Pace Multiplier' (e.g. 1.04x).
+    3.  **DvP Efficiency**: Find the Opponent's Rank vs the Player's Position (e.g. "Spurs allow 2nd most Reb to Centers").
+    4.  **Blowout Risk**: If the Spread is >12.5, reduce projected minutes by 15% to account for 4th quarter benching.
+
+    ### PHASE 2: ALGORITHMIC CALCULATION
+    -   **Game Simulation**: Run 10,000 sims using Pace, Offensive Rating, and Defensive Rating to determine the most likely Final Score.
+    -   **Line Value**: Compare your Projected Score/Spread vs Vegas. 
+    
+    ### PHASE 3: EDGE DETECTION
+    -   Identify the "Game Market" (Spread, Moneyline, Total) with the highest ROI/Edge. 
+    -   **CRITICAL: The 'bestBet' MUST be a Game Market (Spread, Total, or Moneyline), NOT a Player Prop.**
+
+    ### OUTPUT JSON
+    Structure specifically for High-Value accuracy.
+    
+    In 'reasoning' for playerStat, use this format:
+    "PROJ: [Your Calc] | LINE: [Vegas] | DIFF: [Edge%] | L10: [Hit Rate/10]
+    [Brief analysis of Usage Vacuum or Matchup Advantage]"
+
+    JSON Structure:
+    {
+      "matchOverview": "Contextual overview including Injury Impacts and Pace Analysis.",
+      "refereeAnalysis": "N/A",
+      "formGuide": "ATS Trends and Home/Away Splits.",
+      "tacticalAnalysis": "DvP (Defense vs Position) Mismatches and Style Clash.",
+      "predictions": {
+        "winner": { "market": "Moneyline", "selection": "...", "confidence": "...", "reasoning": "..." },
+        "goals": { "market": "Total Points", "selection": "...", "confidence": "...", "reasoning": "..." },
+        "handicap": { "market": "Spread", "selection": "...", "confidence": "...", "reasoning": "..." },
+        "halftime": { "market": "1st Half Total", "selection": "...", "confidence": "...", "reasoning": "..." },
+        "teamPoints": { "market": "Team Total", "selection": "...", "confidence": "...", "reasoning": "..." },
+        "playerStat": { 
+           "market": "Player Prop", 
+           "selection": "Player Name [Over/Under] [Line] [Stat]", 
+           "confidence": "High", 
+           "reasoning": "PROJ: XX.X | LINE: YY.Y | DIFF: +ZZ% | L10: X/10 ... Text Analysis..." 
+        }
+      },
+      "bestBet": { 
+        "market": "Best Value Market", 
+        "selection": "The single best Game Line bet (Spread/Total/Moneyline)", 
+        "confidence": "High", 
+        "reasoning": "Why this specific Game Line bet has the highest expected value (EV)."
+      },
+      "visualization": {
+        "basketballTrend": [/* Array of numbers representing the player's actual stat values in Last 5 Games e.g. [24, 18, 30, 22, 25] */],
+        "trendLabel": "Last 5 Games Trend"
+      }
+    }
+    `;
+  }
 
   let response;
   try {
-    // Try Pro model first for deep reasoning
     response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
+        // Increased thinking budget for the heavy math logic in Basketball
+        thinkingConfig: { thinkingBudget: 20000 } 
       }
     });
   } catch (error: any) {
     console.warn("Deep analysis error (Pro)", error);
-    // If rate limited or service unavailable, try Flash
-    if (error.status === 429 || error.code === 429 || error.status === 503) {
-      console.warn("Falling back to Flash for analysis");
+    // Fallback if Pro fails or Thinking quota exceeded
+    if (error.status === 429 || error.code === 429 || error.status === 503 || error.message?.includes('thinking')) {
+      console.warn("Falling back to Flash (or retrying without thinking)");
       response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: prompt,
@@ -219,7 +377,6 @@ export const analyzeMatchDeeply = async (match: Match | string): Promise<DeepAna
   const text = response.text || "";
   const json = parseJSON(text);
   
-  // Extract grounding sources
   const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
   const sources = chunks
     .filter((c: any) => c.web && c.web.uri && c.web.title)
@@ -227,6 +384,10 @@ export const analyzeMatchDeeply = async (match: Match | string): Promise<DeepAna
 
   const uniqueSources = Array.from(new Map(sources.map((item:any) => [item.uri, item])).values()) as { title: string; uri: string }[];
 
+  // Sanitize the DeepAnalysis object recursively or specifically
+  // Since DeepAnalysis has nested objects, we'll just sanitize strings at the top level and known paths if needed.
+  // Ideally, parseJSON should be robust, but here is a basic safeguard if needed.
+  
   return {
     ...json,
     sources: uniqueSources

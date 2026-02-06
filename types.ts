@@ -1,3 +1,5 @@
+export type Sport = 'football' | 'basketball';
+
 export interface Match {
   home: string;
   away: string;
@@ -5,6 +7,9 @@ export interface Match {
   date: string;
   time?: string;
   id: string;
+  sport: Sport;
+  homeLogo?: string;
+  awayLogo?: string;
   // Optional field for matches loaded from a booking code
   bookingPrediction?: string; 
 }
@@ -16,21 +21,31 @@ export interface PredictionDetail {
   reasoning: string;
 }
 
+export interface Visualization {
+  footballMomentum?: number[]; // Array of 6 numbers (0-100) representing Home dominance per 15min
+  basketballTrend?: number[]; // Array of last 5 games stats
+  trendLabel?: string; // e.g. "Points in Last 5"
+}
+
 export interface DeepAnalysis {
   matchOverview: string;
-  refereeAnalysis: string;
+  refereeAnalysis: string; // Used for Football
   formGuide: string;
   tacticalAnalysis: string;
   predictions: {
     winner: PredictionDetail;
-    goals: PredictionDetail;
-    cards: PredictionDetail;
-    corners: PredictionDetail;
+    goals: PredictionDetail; // Football: O/U Goals | Basketball: Fulltime O/U
+    cards?: PredictionDetail; // Football Only
+    corners?: PredictionDetail; // Football Only
     handicap: PredictionDetail;
     playerStat: PredictionDetail;
+    // Basketball Specific
+    halftime?: PredictionDetail; 
+    teamPoints?: PredictionDetail;
   };
   bestBet: PredictionDetail;
   sources: { title: string; uri: string }[];
+  visualization?: Visualization;
 }
 
 export interface AnalysisState {
@@ -45,4 +60,5 @@ export interface BetSelection {
   selection: string;
   market: string;
   confidence: 'High' | 'Medium' | 'Low';
+  sport?: Sport;
 }
